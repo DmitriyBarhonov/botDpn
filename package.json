@@ -1,0 +1,21 @@
+{
+  "name": "vpn-payment-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram-бот: напоминания об оплате подписки + админ-панель",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "backup": "node --env-file=.env src/backup.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "croner": "10.0.1",
+    "grammy": "1.46.0"
+  }
+}

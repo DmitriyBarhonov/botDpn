@@ -1,0 +1,40 @@
+[Unit]
+Description=Telegram bot: напоминания об оплате подписки
+Documentation=file:///opt/vpnbot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=vpnbot
+Group=vpnbot
+WorkingDirectory=/opt/vpnbot
+
+# --env-file встроен в Node 20.6+, отдельный dotenv не нужен.
+ExecStart=/usr/bin/node --env-file=/opt/vpnbot/.env /opt/vpnbot/src/index.js
+
+Restart=always
+# По умолчанию RestartSec=100ms: при постоянном падении это ~10 перезапусков
+# в секунду, что нагружает базу и грозит блокировкой со стороны Telegram.
+RestartSec=5
+
+# Ограничитель systemd НАВСЕГДА перестаёт поднимать юнит, если он упал
+# StartLimitBurst раз за StartLimitIntervalSec. Для бота это означало бы
+# «умер в 3 ночи — лежит до утра». Ставим 0 = ограничитель выключен.
+StartLimitIntervalSec=0
+
+# Логи идут в journald: смотреть через journalctl -u vpnbot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpnbot
+
+# Базовая изоляция.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Каталог с базой — единственное, куда нужна запись.
+ReadWritePaths=/opt/vpnbot/data
+
+[Install]
+WantedBy=multi-user.target
