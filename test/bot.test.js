@@ -214,15 +214,17 @@ test('многократные нажатия «Я оплатил» дают о�
 
 test('двойное подтверждение не продлевает подписку дважды', () => {
   const { store, add } = seed();
-  add(1, 'Иван', '2026-09-11');
+  const until = D.addDays(D.todayIn(TZ), 30);
+  add(1, 'Иван', until);
   const claim = store.createClaim(1, 1);
   const first = store.confirmClaim(claim.id, TZ, 99);
   const second = store.confirmClaim(claim.id, TZ, 99);
+  const expected = D.addMonths(until, 1);
   assert.equal(first.ok, true);
-  assert.equal(first.to, '2026-10-11');
+  assert.equal(first.to, expected);
   assert.equal(second.ok, false);
   assert.equal(second.already, true);
-  assert.equal(store.getUser(1).paid_until, '2026-10-11');
+  assert.equal(store.getUser(1).paid_until, expected);
 });
 
 test('просроченная подписка продлевается от сегодня, а не от прошлой даты', () => {
@@ -254,10 +256,11 @@ test('подтверждение заявки без выставленной д
   // админ вручную выставит дату.
   assert.equal(store.getClaim(claim.id).status, 'pending');
 
-  store.setPaidUntil(1, '2026-09-11', 99, 'set_date');
+  const until = D.addDays(D.todayIn(TZ), 30);
+  store.setPaidUntil(1, until, 99, 'set_date');
   const second = store.confirmClaim(claim.id, TZ, 99);
   assert.equal(second.ok, true);
-  assert.equal(second.to, '2026-11-11');
+  assert.equal(second.to, D.addMonths(until, 2));
 });
 
 test('отклонение заявки не меняет дату и повторно не срабатывает', () => {
@@ -364,6 +367,25 @@ test('рассылка: получают только нужные, переза
   // 4 успешных + 1 заблокированный: его слот намеренно не откатывается.
   assert.equal(second.skipped, 5);
   assert.equal(second.sent, 0);
+});
+
+test('после возврата из архива пользователь снова получает напоминания', async () => {
+  const { store, add } = seed();
+  const today = D.todayIn(TZ);
+  add(1, 'Иван', D.addDays(today, 3));
+  store.setActive(1, false, 1); // в архив — как это делает кнопка в карточке
+
+  const sent = [];
+  const bot = { api: { sendMessage: async id => { sent.push(id); } } };
+
+  const whileArchived = await R.runDailyCheck({ store, bot, timeZone: TZ, log: () => {} });
+  assert.equal(whileArchived.sent, 0, 'в архиве напоминание не отправляется');
+  assert.equal(sent.length, 0);
+
+  store.setActive(1, true, 1); // возврат из архива
+  const afterReturn = await R.runDailyCheck({ store, bot, timeZone: TZ, log: () => {} });
+  assert.equal(afterReturn.sent, 1, 'после возврата из архива напоминание должно уйти');
+  assert.deepEqual(sent, [1]);
 });
 
 test('временная ошибка откатывает слот и позволяет повторить позже', async () => {
