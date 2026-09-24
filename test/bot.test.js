@@ -79,6 +79,7 @@ test('во всех сообщениях только допустимые Teleg
     T.myStatus(user, '2026-09-08', 3), T.myStatus({ ...user, paid_until: null }, '2026-09-08', null),
     T.adminClaimNotice(user, { months: 2 }), T.adminUserCard(user, '2026-09-08', 3),
     T.claimConfirmed(2, '2026-11-11'), T.claimSent(3), T.CLAIM_REJECTED,
+    T.ADMIN_ASK_DATE, T.ADMIN_BAD_DATE, T.ADMIN_ASK_NAME, T.ADMIN_BAD_NAME,
   ];
   for (const msg of messages) {
     for (const [, tag] of msg.matchAll(/<([^>]*)>/g)) {
@@ -100,7 +101,7 @@ test('callback_data укладывается в лимит 64 байта', () =>
   const all = [
     'pay', 'pm:4', 'st', 'uh', 'pl', 'noop',
     `cc:${Number.MAX_SAFE_INTEGER}`, `cr:${Number.MAX_SAFE_INTEGER}`,
-    'ul:99', `uc:${maxTg}`, `ud:${maxTg}`, `ua:${maxTg}:4`, `ux:${maxTg}:0`,
+    'ul:99', `uc:${maxTg}`, `ud:${maxTg}`, `un:${maxTg}`, `ua:${maxTg}:4`, `ux:${maxTg}:0`,
   ];
   for (const data of all) {
     assert.ok(K.callbackDataBytes(data) <= 64, `${data} длиннее 64 байт`);
@@ -128,6 +129,13 @@ test('клавиатуры собираются и кнопки валидны',
     }
   }
   assert.equal(K.monthsKeyboard().inline_keyboard.flat().length, 4);
+});
+
+test('карточка пользователя содержит кнопку изменения имени', () => {
+  const kb = K.userCardKeyboard({ tg_id: 42, is_active: 1 }, 0);
+  const buttons = kb.inline_keyboard.flat();
+  const nameBtn = buttons.find(b => b.callback_data === 'un:42');
+  assert.ok(nameBtn, 'кнопка un:<tg_id> должна быть в карточке');
 });
 
 // ---------- валидация ввода ----------
@@ -288,6 +296,17 @@ test('слот напоминания занимается один раз', () 
   // другой вид напоминания и другая дата — отдельные слоты
   assert.equal(store.claimNotification(1, 'd1', '2026-09-11', '2026-09-08'), true);
   assert.equal(store.claimNotification(1, 'd3', '2026-10-11', '2026-09-08'), true);
+});
+
+test('renameUser меняет имя и пишет в audit', () => {
+  const { store, add } = seed();
+  add(1, 'Иван', '2026-09-11');
+  store.renameUser(1, 'Пётр', 99);
+  assert.equal(store.getUser(1).name, 'Пётр');
+  const audit = store.listAudit(1)[0];
+  assert.equal(audit.action, 'rename');
+  assert.equal(audit.tg_id, 1);
+  assert.match(audit.details, /Иван -> Пётр/);
 });
 
 test('список пользователей сортируется по близости срока, без даты — в конце', () => {

@@ -143,6 +143,17 @@ export class Store {
     })();
   }
 
+  /** Админ меняет имя пользователя вручную (отдельно от setName при онбординге). */
+  renameUser(tgId, name, actor = null) {
+    const before = this.getUser(tgId)?.name ?? null;
+    this.db.transaction(() => {
+      this.db
+        .prepare(`UPDATE users SET name = ?, updated_at = ? WHERE tg_id = ?`)
+        .run(name, nowIso(), tgId);
+      this.#audit(actor, 'rename', tgId, `${before ?? '—'} -> ${name}`);
+    })();
+  }
+
   setBlocked(tgId, blocked) {
     this.db
       .prepare('UPDATE users SET is_blocked = ?, updated_at = ? WHERE tg_id = ?')

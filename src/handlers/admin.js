@@ -4,12 +4,12 @@
  * Экраны:
  *   /admin, /help  — меню и справка
  *   /users         — список пользователей, постранично, с сортировкой «кто ближе к концу»
- *   карточка       — изменить дату, +1..4 месяца, архив
+ *   карточка       — изменить дату, изменить имя, +1..4 месяца, архив
  *   /pending       — заявки, ожидающие подтверждения
  *   /find <текст>  — поиск по имени, @username или ID
  *   /stats, /audit — сводка и журнал изменений
  *
- * Ввод даты вручную реализован состоянием в памяти процесса (adminState):
+ * Ввод даты/имени вручную реализован состоянием в памяти процесса (adminState):
  * это короткоживущий диалог, терять его при перезапуске не страшно.
  */
 
@@ -22,10 +22,11 @@ import {
   claimKeyboard,
 } from '../keyboards.js';
 import { runDailyCheck, getLastRun, isBlockedError } from '../reminders.js';
+import { sanitizeName } from './user.js';
 
 const PAGE_SIZE = 8;
 
-/** Ожидание ввода даты: adminState.set(adminId, {tgId, page}). */
+/** Ожидание ввода: adminState.set(adminId, {tgId, mode: 'date'|'name'}). */
 const adminState = new Map();
 
 export function registerAdminHandlers(bot, deps) {
@@ -148,12 +149,29 @@ export function registerAdminHandlers(bot, deps) {
     const user = store.getUser(tgId);
     if (!user) return void ctx.answerCallbackQuery('Пользователь не найден');
 
-    adminState.set(ctx.from.id, { tgId });
+    adminState.set(ctx.from.id, { tgId, mode: 'date' });
     await ctx.answerCallbackQuery();
     await ctx.reply(
       `Пользователь: <b>${T.esc(user.name || tgId)}</b>\n` +
         `Текущая дата: ${user.paid_until ? formatRu(user.paid_until) : '—'}\n\n` +
         T.ADMIN_ASK_DATE,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  /** Запрос ручного ввода имени. */
+  bot.callbackQuery(/^un:(\d+)$/, async ctx => {
+    if (!isAdmin(ctx)) return void ctx.answerCallbackQuery(T.NOT_ADMIN);
+    const tgId = Number(ctx.match[1]);
+    const user = store.getUser(tgId);
+    if (!user) return void ctx.answerCallbackQuery('Пользователь не найден');
+
+    adminState.set(ctx.from.id, { tgId, mode: 'name' });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `Пользователь: <b>${T.esc(user.name || tgId)}</b>\n` +
+        `Текущее имя: <b>${T.esc(user.name || '—')}</b>\n\n` +
+        T.ADMIN_ASK_NAME,
       { parse_mode: 'HTML' }
     );
   });
@@ -255,16 +273,23 @@ export function registerAdminHandlers(bot, deps) {
     log(`заявка #${claimId} отклонена: ${user.name || user.tg_id}`);
   });
 
-  // ---------- ввод даты текстом ----------
-  // Возвращает true, если сообщение обработано как ввод даты.
+  // ---------- ввод даты/имени текстом ----------
+  // Возвращает true, если сообщение обработано как ввод для adminState.
   return function handleAdminText(ctx) {
     if (ctx.from?.id !== adminId) return false;
     const pending = adminState.get(adminId);
     if (!pending) return false;
 
     const text = (ctx.message?.text ?? '').trim();
-    if (text.startsWith('/')) return false; // команды не считаем датой
+    if (text.startsWith('/')) return false; // команды не считаем вводом
 
+    if (pending.mode === 'name') {
+      return handleNameInput(ctx, deps, pending, text);
+    }
+    return handleDateInput(ctx, deps, pending, text);
+  };
+
+  function handleDateInput(ctx, deps, pending, text) {
     const iso = parseRuDate(text);
     if (!iso) {
       ctx.reply(T.ADMIN_BAD_DATE, { parse_mode: 'HTML' }).catch(() => {});
@@ -296,7 +321,38 @@ export function registerAdminHandlers(bot, deps) {
     );
     log(`админ выставил дату ${user.name || pending.tgId}: ${iso}`);
     return true;
-  };
+  }
+
+  function handleNameInput(ctx, deps, pending, text) {
+    const name = sanitizeName(text);
+    if (!name) {
+      ctx.reply(T.ADMIN_BAD_NAME, { parse_mode: 'HTML' }).catch(() => {});
+      return true;
+    }
+
+    const user = store.getUser(pending.tgId);
+    adminState.delete(adminId);
+    if (!user) {
+      ctx.reply('Пользователь не найден.').catch(() => {});
+      return true;
+    }
+
+    const oldName = user.name;
+    store.renameUser(pending.tgId, name, adminId);
+
+    ctx
+      .reply(
+        `✅ Имя для <code>${pending.tgId}</code> изменено: <b>${T.esc(oldName || '—')}</b> → <b>${T.esc(name)}</b>.`,
+        { parse_mode: 'HTML' }
+      )
+      .catch(() => {});
+
+    notifyUser(bot, pending.tgId, store, log,
+      `✏️ Администратор изменил твоё имя на: <b>${T.esc(name)}</b>`
+    );
+    log(`админ изменил имя ${pending.tgId}: ${oldName || '—'} -> ${name}`);
+    return true;
+  }
 }
 
 // ---------- вспомогательные функции ----------

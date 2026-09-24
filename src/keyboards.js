@@ -15,6 +15,7 @@
  *   ul:<p>   — список пользователей, страница p
  *   uc:<tg>  — карточка пользователя tg
  *   ud:<tg>  — изменить дату пользователю tg
+ *   un:<tg>  — изменить имя пользователю tg
  *   ua:<tg>:<n> — добавить n месяцев пользователю tg
  *   ux:<tg>:<0|1> — архив/восстановить
  *   pl       — список заявок
@@ -73,6 +74,7 @@ export function usersKeyboard(users, page, pages) {
 export function userCardKeyboard(user, page = 0) {
   const kb = new InlineKeyboard()
     .text(BTN.setDate, `ud:${user.tg_id}`)
+    .text(BTN.setName, `un:${user.tg_id}`)
     .row();
   for (const n of [1, 2, 3, 4]) kb.text(BTN.addMonth(n), `ua:${user.tg_id}:${n}`);
   kb.row();
