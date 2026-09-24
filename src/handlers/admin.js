@@ -8,9 +8,10 @@
  *   /pending       — заявки, ожидающие подтверждения
  *   /find <текст>  — поиск по имени, @username или ID
  *   /stats, /audit — сводка и журнал изменений
+ *   /broadcast     — разослать сообщение всем активным пользователям
  *
- * Ввод даты/имени вручную реализован состоянием в памяти процесса (adminState):
- * это короткоживущий диалог, терять его при перезапуске не страшно.
+ * Ввод даты/имени/текста рассылки реализован состоянием в памяти процесса
+ * (adminState): это короткоживущий диалог, терять его при перезапуске не страшно.
  */
 
 import { todayIn, daysBetween, addMonths, formatRu, isValidDate, pluralMonths } from '../lib/dates.js';
@@ -26,8 +27,11 @@ import { sanitizeName } from './user.js';
 
 const PAGE_SIZE = 8;
 
-/** Ожидание ввода: adminState.set(adminId, {tgId, mode: 'date'|'name'}). */
+/** Ожидание ввода: adminState.set(adminId, {tgId, mode}) или {mode: 'broadcast'}. */
 const adminState = new Map();
+
+/** Пауза между отправками рассылки, чтобы не упереться в лимиты Telegram. */
+const BROADCAST_DELAY_MS = 120;
 
 export function registerAdminHandlers(bot, deps) {
   const { store, adminId, timeZone, log } = deps;
@@ -99,6 +103,18 @@ export function registerAdminHandlers(bot, deps) {
     if (found.length > 10) {
       await ctx.reply(`Показал 10 из ${found.length}. Уточни запрос.`);
     }
+  });
+
+  /** Рассылка всем активным пользователям. С аргументом — сразу, без — спросит текст. */
+  bot.command('broadcast', async ctx => {
+    if (!isAdmin(ctx)) return;
+    const text = (ctx.match ?? '').trim();
+    if (!text) {
+      adminState.set(ctx.from.id, { mode: 'broadcast' });
+      await ctx.reply(T.ADMIN_ASK_BROADCAST, { parse_mode: 'HTML' });
+      return;
+    }
+    await runBroadcast(ctx, deps, text);
   });
 
   /** Ручной прогон ежедневной проверки — удобно для теста. */
@@ -286,6 +302,11 @@ export function registerAdminHandlers(bot, deps) {
     if (pending.mode === 'name') {
       return handleNameInput(ctx, deps, pending, text);
     }
+    if (pending.mode === 'broadcast') {
+      adminState.delete(adminId);
+      runBroadcast(ctx, deps, ctx.message.text); // берём текст как есть, без .trim()
+      return true;
+    }
     return handleDateInput(ctx, deps, pending, text);
   };
 
@@ -434,6 +455,53 @@ async function showPending(ctx, deps, edit) {
       reply_markup: claimKeyboard(c.id),
     });
   }
+}
+
+/**
+ * Рассылает текст всем активным (не в архиве) пользователям.
+ * Блокировки помечает в базе, как и ежедневные напоминания; не дублирует
+ * логику ожидания — просто ждёт BROADCAST_DELAY_MS между отправками.
+ */
+export async function runBroadcast(ctx, deps, text) {
+  const { store, bot, log } = deps;
+  const users = store.listUsers({ activeOnly: true });
+
+  if (!users.length) {
+    await ctx.reply('Нет активных пользователей для рассылки.');
+    return;
+  }
+
+  await ctx.reply(`📣 Рассылаю ${users.length} пользователям…`);
+
+  let sent = 0;
+  let blocked = 0;
+  let failed = 0;
+
+  for (const user of users) {
+    try {
+      await bot.api.sendMessage(user.tg_id, text, { parse_mode: 'HTML' });
+      sent++;
+      if (user.is_blocked) store.setBlocked(user.tg_id, false);
+    } catch (err) {
+      if (isBlockedError(err)) {
+        store.setBlocked(user.tg_id, true);
+        blocked++;
+      } else {
+        failed++;
+        log(`рассылка: ошибка отправки ${user.tg_id}: ${err?.message ?? err}`);
+      }
+    }
+    await sleep(BROADCAST_DELAY_MS);
+  }
+
+  await ctx.reply(
+    `✅ Рассылка завершена.\nДоставлено: ${sent}\nЗаблокировали бота: ${blocked}\nОшибок: ${failed}`
+  );
+  log(`рассылка админа: доставлено ${sent}, заблокировано ${blocked}, ошибок ${failed}`);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /** Отправляет или редактирует сообщение — в зависимости от источника вызова. */

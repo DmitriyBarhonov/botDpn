@@ -13,7 +13,7 @@ import * as R from '../src/reminders.js';
 import { Store } from '../src/lib/db.js';
 import { loadConfig } from '../src/config.js';
 import { sanitizeName } from '../src/handlers/user.js';
-import { parseRuDate } from '../src/handlers/admin.js';
+import { parseRuDate, runBroadcast } from '../src/handlers/admin.js';
 
 const TZ = 'Europe/Moscow';
 
@@ -79,7 +79,7 @@ test('во всех сообщениях только допустимые Teleg
     T.myStatus(user, '2026-09-08', 3), T.myStatus({ ...user, paid_until: null }, '2026-09-08', null),
     T.adminClaimNotice(user, { months: 2 }), T.adminUserCard(user, '2026-09-08', 3),
     T.claimConfirmed(2, '2026-11-11'), T.claimSent(3), T.CLAIM_REJECTED,
-    T.ADMIN_ASK_DATE, T.ADMIN_BAD_DATE, T.ADMIN_ASK_NAME, T.ADMIN_BAD_NAME,
+    T.ADMIN_ASK_DATE, T.ADMIN_BAD_DATE, T.ADMIN_ASK_NAME, T.ADMIN_BAD_NAME, T.ADMIN_ASK_BROADCAST,
   ];
   for (const msg of messages) {
     for (const [, tag] of msg.matchAll(/<([^>]*)>/g)) {
@@ -435,6 +435,52 @@ test('временная ошибка откатывает слот и позв�
   const second = await R.runDailyCheck({ store, bot, timeZone: TZ, log: () => {} });
   assert.deepEqual(sent, [1]);
   assert.equal(second.sent, 1);
+});
+
+test('рассылка админа: доходит только активным, архивные и заблокировавшие пропускаются', async () => {
+  const { store, add } = seed();
+  const today = D.todayIn(TZ);
+  add(1, 'Активный1', D.addDays(today, 10));
+  add(2, 'Активный2', D.addDays(today, 10));
+  add(3, 'Заблокировал', D.addDays(today, 10));
+  add(4, 'Архивный', D.addDays(today, 10));
+  store.setActive(4, false, 1);
+
+  const sent = [];
+  const bot = {
+    api: {
+      sendMessage: async (id, text) => {
+        if (id === 3) {
+          const err = new Error('Forbidden: bot was blocked by the user');
+          err.error_code = 403;
+          throw err;
+        }
+        sent.push({ id, text });
+      },
+    },
+  };
+  const replies = [];
+  const ctx = { reply: async text => { replies.push(text); } };
+
+  await runBroadcast(ctx, { store, bot, log: () => {} }, 'Технические работы завтра');
+
+  assert.deepEqual(sent.map(s => s.id).sort(), [1, 2]);
+  assert.ok(sent.every(s => s.text === 'Технические работы завтра'));
+  assert.equal(store.getUser(3).is_blocked, 1);
+  assert.ok(replies.some(r => r.includes('Доставлено: 2')));
+  assert.ok(replies.some(r => r.includes('Заблокировали бота: 1')));
+});
+
+test('рассылка админа: без активных пользователей ничего не отправляет', async () => {
+  const { store } = seed();
+  const bot = { api: { sendMessage: async () => { throw new Error('не должно вызываться'); } } };
+  const replies = [];
+  const ctx = { reply: async text => { replies.push(text); } };
+
+  await runBroadcast(ctx, { store, bot, log: () => {} }, 'привет');
+
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /Нет активных/);
 });
 
 test('догоняющий запуск выполняется один раз в день', async () => {
